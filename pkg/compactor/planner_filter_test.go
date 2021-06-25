@@ -9,6 +9,8 @@ import (
 	"github.com/cortexproject/cortex/pkg/util/flagext"
 	"github.com/go-kit/kit/log"
 	"github.com/oklog/ulid"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/prometheus/tsdb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -106,6 +108,11 @@ func TestPlannerFilterPlanGeneration(t *testing.T) {
 		},
 	}
 
+	remainingPlannedCompactions :=
+		promauto.With(prometheus.NewRegistry()).NewGauge(prometheus.GaugeOpts{
+			Name: "cortex_compactor_remaining_planned_compactions",
+			Help: "Total number of plans that remain to be compacted.",
+		})
 	for testName, testData := range tests {
 		t.Run(testName, func(t *testing.T) {
 			compactorCfg := Config{}
@@ -116,7 +123,7 @@ func TestPlannerFilterPlanGeneration(t *testing.T) {
 				compactorCfg: compactorCfg,
 				ulogger:      log.NewNopLogger(),
 			}
-			err := f.generatePlans(context.Background(), testData.blocks)
+			err := f.generatePlans(context.Background(), testData.blocks, remainingPlannedCompactions)
 			require.NoError(t, err)
 			actualPlans := f.plans
 			require.Len(t, actualPlans, len(testData.expectedPlans))

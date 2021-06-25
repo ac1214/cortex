@@ -3,6 +3,7 @@ package compactor
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"sort"
 	"strings"
 	"time"
@@ -26,7 +27,8 @@ type PlannerFilter struct {
 	compactorCfg   Config
 	metaSyncDir    string
 
-	plans []blocksGroup
+	plans       []blocksGroup
+	hashedPlans map[uint32]blocksGroup
 }
 
 func NewPlannerFilter(ctx context.Context, userID string, ulogger log.Logger, bucket objstore.InstrumentedBucket, fetcherFilters []block.MetadataFilter, compactorCfg Config, metaSyncDir string) (*PlannerFilter, error) {
@@ -67,18 +69,18 @@ func (f *PlannerFilter) getUserBlocks(ctx context.Context) (map[ulid.ULID]*metad
 }
 
 // Fetches blocks and generates plans that can be parallized and saves them in the PlannerFilter struct.
-func (f *PlannerFilter) fetchBlocksAndGeneratePlans(ctx context.Context) error {
+func (f *PlannerFilter) fetchBlocksAndGeneratePlans(ctx context.Context, remainingPlannedCompactions prometheus.Gauge) error {
 	// Get blocks
 	blocks, err := f.getUserBlocks(ctx)
 	if err != nil {
 		return err
 	}
 
-	return f.generatePlans(ctx, blocks)
+	return f.generatePlans(ctx, blocks, remainingPlannedCompactions)
 }
 
 // Generates plans that can be parallized and saves them
-func (f *PlannerFilter) generatePlans(ctx context.Context, blocks map[ulid.ULID]*metadata.Meta) error {
+func (f *PlannerFilter) generatePlans(ctx context.Context, blocks map[ulid.ULID]*metadata.Meta, remainingPlannedCompactions prometheus.Gauge) error {
 	// First of all we have to group blocks using the Thanos default
 	// grouping (based on downsample resolution + external labels).
 	mainGroups := map[string][]*metadata.Meta{}
@@ -89,6 +91,7 @@ func (f *PlannerFilter) generatePlans(ctx context.Context, blocks map[ulid.ULID]
 
 	var plans []blocksGroup
 
+	remainingPlannedCompactions.Set(0)
 	for k, mainBlocks := range mainGroups {
 		for i, plan := range groupBlocksByCompactableRanges(mainBlocks, f.compactorCfg.BlockRanges.ToMilliseconds()) {
 			// Nothing to do if we don't have at least 2 blocks.
@@ -97,6 +100,7 @@ func (f *PlannerFilter) generatePlans(ctx context.Context, blocks map[ulid.ULID]
 			}
 
 			level.Info(f.ulogger).Log("msg", "Found plan for user", "user", f.userID, "plan", plan.String())
+			remainingPlannedCompactions.Add(1)
 
 			plan.key = fmt.Sprintf("%v_%v", k, i)
 
@@ -124,6 +128,25 @@ func (f *PlannerFilter) generatePlans(ctx context.Context, blocks map[ulid.ULID]
 	})
 
 	f.plans = plans
+
+	err := f.hashPlans()
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (f *PlannerFilter) hashPlans() error {
+	f.hashedPlans = make(map[uint32]blocksGroup)
+
+	for _, plan := range f.plans {
+		planString := fmt.Sprintf("%v%v%v", f.userID, plan.rangeStart, plan.rangeEnd)
+		planHasher := fnv.New32a()
+		// Hasher never returns err.
+		_, _ = planHasher.Write([]byte(planString))
+		f.hashedPlans[planHasher.Sum32()] = plan
+	}
 
 	return nil
 }
