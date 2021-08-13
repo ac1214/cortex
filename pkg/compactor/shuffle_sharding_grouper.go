@@ -145,12 +145,11 @@ func (g *ShuffleShardingGrouper) Groups(blocks map[ulid.ULID]*metadata.Meta) (re
 				level.Warn(g.logger).Log("msg", "unable to check if user is owned by this shard", "group hash", groupHash, "err", err, "group", group.String())
 				continue
 			} else if !owned {
-				g.remainingPlannedCompactions.Inc()
 				level.Info(g.logger).Log("msg", "skipping group because it is not owned by this shard", "group_hash", groupHash)
 				continue
 			}
 
-			g.remainingPlannedCompactions.Add(1)
+			g.remainingPlannedCompactions.Inc()
 			groupKey := fmt.Sprintf("%v%s", groupHash, compact.DefaultGroupKey(group.blocks[0].Thanos))
 			i++
 
