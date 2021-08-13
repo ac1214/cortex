@@ -128,7 +128,6 @@ func (g *ShuffleShardingGrouper) Groups(blocks map[ulid.ULID]*metadata.Meta) (re
 		return outGroups, nil
 	}
 
-	i := 0
 	// Metrics for the remaining planned compactions
 	g.remainingPlannedCompactions.Set(0)
 
@@ -151,7 +150,6 @@ func (g *ShuffleShardingGrouper) Groups(blocks map[ulid.ULID]*metadata.Meta) (re
 
 			g.remainingPlannedCompactions.Inc()
 			groupKey := fmt.Sprintf("%v%s", groupHash, compact.DefaultGroupKey(group.blocks[0].Thanos))
-			i++
 
 			level.Info(g.logger).Log("msg", "found compactable group for user", "group_hash", groupHash, "group", group.String())
 
