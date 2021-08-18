@@ -20,20 +20,21 @@ import (
 )
 
 type ShuffleShardingGrouper struct {
-	logger                   log.Logger
-	bkt                      objstore.Bucket
-	acceptMalformedIndex     bool
-	enableVerticalCompaction bool
-	reg                      prometheus.Registerer
-	blocksMarkedForDeletion  prometheus.Counter
-	garbageCollectedBlocks   prometheus.Counter
-	hashFunc                 metadata.HashFunc
-	compactions              *prometheus.CounterVec
-	compactionRunsStarted    *prometheus.CounterVec
-	compactionRunsCompleted  *prometheus.CounterVec
-	compactionFailures       *prometheus.CounterVec
-	verticalCompactions      *prometheus.CounterVec
-	compactorCfg             Config
+	logger                      log.Logger
+	bkt                         objstore.Bucket
+	acceptMalformedIndex        bool
+	enableVerticalCompaction    bool
+	reg                         prometheus.Registerer
+	blocksMarkedForDeletion     prometheus.Counter
+	garbageCollectedBlocks      prometheus.Counter
+	remainingPlannedCompactions prometheus.Gauge
+	hashFunc                    metadata.HashFunc
+	compactions                 *prometheus.CounterVec
+	compactionRunsStarted       *prometheus.CounterVec
+	compactionRunsCompleted     *prometheus.CounterVec
+	compactionFailures          *prometheus.CounterVec
+	verticalCompactions         *prometheus.CounterVec
+	compactorCfg                Config
 }
 
 func NewShuffleShardingGrouper(
@@ -44,6 +45,7 @@ func NewShuffleShardingGrouper(
 	reg prometheus.Registerer,
 	blocksMarkedForDeletion prometheus.Counter,
 	garbageCollectedBlocks prometheus.Counter,
+	remainingPlannedCompactions prometheus.Gauge,
 	hashFunc metadata.HashFunc,
 	compactorCfg Config,
 ) *ShuffleShardingGrouper {
@@ -52,14 +54,15 @@ func NewShuffleShardingGrouper(
 	}
 
 	return &ShuffleShardingGrouper{
-		logger:                   logger,
-		bkt:                      bkt,
-		acceptMalformedIndex:     acceptMalformedIndex,
-		enableVerticalCompaction: enableVerticalCompaction,
-		reg:                      reg,
-		blocksMarkedForDeletion:  blocksMarkedForDeletion,
-		garbageCollectedBlocks:   garbageCollectedBlocks,
-		hashFunc:                 hashFunc,
+		logger:                      logger,
+		bkt:                         bkt,
+		acceptMalformedIndex:        acceptMalformedIndex,
+		enableVerticalCompaction:    enableVerticalCompaction,
+		reg:                         reg,
+		blocksMarkedForDeletion:     blocksMarkedForDeletion,
+		garbageCollectedBlocks:      garbageCollectedBlocks,
+		remainingPlannedCompactions: remainingPlannedCompactions,
+		hashFunc:                    hashFunc,
 		compactions: promauto.With(reg).NewCounterVec(prometheus.CounterOpts{
 			Name: "thanos_compact_group_compactions_total",
 			Help: "Total number of group compaction attempts that resulted in a new block.",
@@ -99,6 +102,9 @@ func (g *ShuffleShardingGrouper) Groups(blocks map[ulid.ULID]*metadata.Meta) (re
 	var outGroups []*compact.Group
 
 	i := 0
+	// Metrics for the remaining planned compactions
+	g.remainingPlannedCompactions.Set(0)
+
 	for _, mainBlocks := range mainGroups {
 		for _, group := range groupBlocksByCompactableRanges(mainBlocks, g.compactorCfg.BlockRanges.ToMilliseconds()) {
 			// Nothing to do if we don't have at least 2 blocks.
@@ -109,6 +115,7 @@ func (g *ShuffleShardingGrouper) Groups(blocks map[ulid.ULID]*metadata.Meta) (re
 			// TODO: Use the group's hash to determine whether a compactor should be responsible for compacting that group
 			groupHash := hashGroup(group.blocks[0].Thanos.Labels["__org_id__"], group.rangeStart, group.rangeEnd)
 
+			g.remainingPlannedCompactions.Add(1)
 			groupKey := fmt.Sprintf("%v%d", groupHash, i)
 			i++
 
